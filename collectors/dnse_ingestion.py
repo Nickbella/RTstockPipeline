@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 from dotenv import load_dotenv
 from dnse import TradingClient
@@ -26,19 +27,32 @@ if not API_KEY or not API_SECRET:
 WS_URL = os.getenv("DNSE_WS_URL", "wss://ws-openapi.dnse.com.vn")
 ENCODING = os.getenv("DNSE_ENCODING", "msgpack")   # "json" hoặc "msgpack"
 BOARD_ID = "G1"                                    # giữ như ví dụ trade.py
-SYMBOLS = ["HPG", "VCB", "FPT"]
+SYMBOLS = [...]
 OHLC_SYMBOLS = SYMBOLS + ["VN30"]
 SILENCE_LIMIT = 180                                # giây im lặng trong giờ giao dịch thì nối lại
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 # Điền sau khi xem "Mẫu ..." trong nhật ký (bước 2). None = chưa biết.
-TS_FIELDS = {"trade": "time", "ohlc_1": "time"}
+TS_FIELDS = {"trade": "time", "ohlc_1": "time", "quote": None,
+             "foreign": None, "expected_price": None}
 
-writer = RawWriter("dnse")
+writer = RawWriter("dnse") 
 stats = Counter()
 state = {"last_msg": time.monotonic()}
 seen = set()
 
+# Đọc danh sách mã chứng khoán từ file, bỏ trùng, bỏ dòng trống. Nếu không có file thì dùng fallback với 3 mã mặc định
+def load_symbols(path, fallback=("HPG", "VCB", "FPT")): 
+    p = Path(path)
+    if p.exists():
+        syms = [s.strip().upper() for s in p.read_text(encoding="utf-8").split()] # Đọc file, bỏ khoảng trắng đầu cuối, viết hoa  
+        syms = list(dict.fromkeys(s for s in syms if s)) # Bỏ trùng và bỏ dòng trống 
+        if syms:
+            return syms
+    return list(fallback)
+
+SYMBOLS = load_symbols(os.getenv("SYMBOLS_FILE", "config/vn30.txt"))
+OHLC_SYMBOLS = list(dict.fromkeys(SYMBOLS + ["VN30"]))
 
 def to_dict(obj):
     """Đổi đối tượng SDK trả về thành dict để ghi JSON."""
@@ -85,7 +99,7 @@ def expecting_data(now):
     if now.weekday() >= 5:
         return False
     t = now.time()
-    return dtime(9, 0) <= t < dtime(11, 30) or dtime(13, 0) <= t < dtime(14, 45)
+    return dtime(9, 15) <= t < dtime(11, 30) or dtime(13, 0) <= t < dtime(14, 30)
 
 
 def parse_until(s):
@@ -95,12 +109,16 @@ def parse_until(s):
     return datetime.now(VN_TZ).replace(hour=h, minute=m, second=0, microsecond=0)
 
 
-async def stats_loop():
+async def stats_loop(interval=30):
+    prev, peak = 0, 0.0
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(interval)
+        total = sum(v for k, v in stats.items() if k != "loi_xu_ly")
+        rate = (total - prev) / interval
+        prev, peak = total, max(peak, rate)
         silent = time.monotonic() - state["last_msg"]
-        log.info("Số message: %s | im lặng %.0fs", dict(stats), silent)
-
+        log.info("Số message: %s | %.1f msg/s (đỉnh %.1f) | im lặng %.0fs",
+                 dict(stats), rate, peak, silent)
 
 async def run_session(stop_at):
     client = TradingClient(api_key=API_KEY, api_secret=API_SECRET,
@@ -114,7 +132,15 @@ async def run_session(stop_at):
                                       encoding=ENCODING, board_id=BOARD_ID)
         await client.subscribe_ohlc(OHLC_SYMBOLS, resolution="1",
                                     on_ohlc=make_handler("ohlc_1"), encoding=ENCODING)
-        log.info("Đã đăng ký: trade + ohlc 1 phút")
+        await client.subscribe_quotes(SYMBOLS, on_quote=make_handler("quote"),
+                                      encoding=ENCODING, board_id=BOARD_ID)
+        await client.subscribe_foreign_trading(SYMBOLS, board_id=BOARD_ID,
+                                               on_trade=make_handler("foreign"),
+                                               encoding=ENCODING)
+        await client.subscribe_expected_price(SYMBOLS,
+                                              on_expected_price=make_handler("expected_price"),
+                                              encoding=ENCODING, board_id=BOARD_ID)
+        log.info("Đã đăng ký: trade + ohlc + quote + foreign + expected_price")
 
         while True:
             await asyncio.sleep(5)
