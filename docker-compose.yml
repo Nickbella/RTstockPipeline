@@ -1,0 +1,7 @@
+services:
+  app:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data   # lưu dữ liệu tải về (CSV/JSON) ra máy thật
