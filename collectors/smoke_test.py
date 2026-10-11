@@ -20,7 +20,7 @@ from dnse.websocket.models import Trade
 
 
 async def main():
-    encoding = "msgpack"  # json or msgpack
+    encoding = "msgpack"  
     client = TradingClient(
         api_key=API_KEY,
         api_secret=API_SECRET,
