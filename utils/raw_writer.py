@@ -1,69 +1,86 @@
 import json
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
-# Ghi mỗi message nhận được vào file jsonl, mỗi file tên theo cấu trúc: data/raw/{source}/{YYYY-MM-DD}/{HH}.jsonl
 class RawWriter:
-    def __init__(self, source, exchange_tz="Asia/Ho_Chi_Minh",
-                 root="data/raw", flush_every=50, flush_seconds=5):
-        self.source = source # Nguồn dữ liệu: DNSE
-        self.tz = ZoneInfo(exchange_tz) # Múi giờ sàn giao dịch: VN
-        self.root = Path(root)
-        self.flush_every = flush_every # Số lượng message nhận được thì xả một lần vào file JSONL: 50
-        self.flush_seconds = flush_seconds # Thời gian chờ tối đa giữa các lần xả: 5 giây
-        self._lock = threading.Lock() # Khóa luồng để tránh xung đột khi nhiều luồng cùng ghi dữ liệu vào file JSONL
-        self._fh = None # Tạo biến file handle để mở/đổi file JSONL theo ngày và giờ
-        self._current_key = None # Tạo khóa cập nhật thời gian, dùng để xác định xem có cần tạo file mới theo ngày và giờ hay không
-        self._count = 0 # Đếm số lượng message nhận được, dùng để xác định khi nào xả dữ liệu vào file JSONL
-        self._last_flush = time.monotonic() # Lưu thời gian xả dữ liệu cuối cùng, dùng để xác định khi nào xả dữ liệu vào file JSONL
+    """Ghi mỗi message thành một dòng JSON (JSON Lines), đổi tệp theo giờ.
 
-    # Định nghĩa nội dung 1 message được ghi vào file JSONL theo giờ 
-    def write(self, topic, payload, symbol=None, event_ts=None):
-        now_utc = datetime.now(timezone.utc) # Khai báo biến lấy thời gian hiện tại theo múi giờ UTC0
+    Cấu trúc tệp: data/raw/{source}/{YYYY-MM-DD}/{HH}.jsonl (ngày và giờ theo múi giờ của sàn).
+
+    Khóa JSON của mỗi bản ghi (trùng tên biến trong code):
+        source                            nguồn dữ liệu
+        topic                             loại dữ liệu (trade, ohlc_1_minute, ...)
+        symbol                            mã chứng khoán
+        event_timestamp_utc               thời gian sự kiện do sàn gửi, đã chuẩn hóa về UTC (có thể null)
+        collector_received_timestamp_utc  thời điểm callback của collector nhận message, UTC
+        sdk_received_timestamp_utc        thời điểm SDK nhận message (từ trường receivedAt trong payload), UTC
+        sequence_number                   số thứ tự tăng dần của bản ghi
+        payload                           nội dung gốc của message, không chỉnh sửa
+
+    Dữ liệu thu trước đây dùng tên cũ: event_ts, recv_ts, sdk_recv_ts, seq (xem tools/inspect_raw.py).
+    """
+
+    def __init__(self, source, exchange_timezone="Asia/Ho_Chi_Minh", root_directory="data/raw"):
+        self.source = source
+        self.exchange_timezone = ZoneInfo(exchange_timezone)
+        self.root_directory = Path(root_directory)
+        self._write_lock = threading.Lock()     # lớp bảo hiểm; mô hình mới chỉ có một luồng ghi
+        self._file_handle = None
+        self._current_file_key = None
+
+    def build_record(self, topic, payload, symbol=None, event_timestamp_utc=None,
+                     sdk_received_timestamp_utc=None, sequence_number=None):
+        """Tạo bản ghi (chạy ở producer, không đụng tới tệp). Trả về (file_key, record)."""
+        current_utc_time = datetime.now(timezone.utc)
         record = {
-            "source": self.source, # Nguồn: Mặc định DNSE
-            "topic": topic, # Loại message: trade, quote, orderbook, ohlc...
-            "symbol": symbol, # Mã chứng khoán
-            "event_ts": event_ts, # Thời gian sự kiện
-            "recv_ts": now_utc.isoformat(), # Thời gian nhận được message (dạng chuỗi, múi giờ UTC0)
-            "payload": payload, # Nội dung gốc của message
+            "source": self.source,
+            "topic": topic,
+            "symbol": symbol,
+            "event_timestamp_utc": event_timestamp_utc,
+            "collector_received_timestamp_utc": current_utc_time.isoformat(),
         }
+        if sdk_received_timestamp_utc is not None:
+            record["sdk_received_timestamp_utc"] = sdk_received_timestamp_utc
+        if sequence_number is not None:
+            record["sequence_number"] = sequence_number
+        record["payload"] = payload
 
-        # Chuyển đổi dict record thành dạng chuỗi, đảm bảo in ra toàn vẹn văn bản và xuống dòng sau mỗi dict
-        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+        local_time = current_utc_time.astimezone(self.exchange_timezone)
+        file_key = (local_time.strftime("%Y-%m-%d"), local_time.strftime("%H"))
+        return file_key, record
 
-        # Chuyển đổi thời gian nhận được message sang múi giờ sàn giao dịch, và tạo key theo cấu trúc (YYYY-MM-DD, HH)
-        local = now_utc.astimezone(self.tz) # Khai báo biến chuyển giờ UTC0 sang giờ sàn giao dịch (VN) dùng cho key 
-        key = (local.strftime("%Y-%m-%d"), local.strftime("%H")) # Khóa quyết định xem có cần tạo file mới theo ngày và giờ hay không
+    def write_batch(self, keyed_records):
+        """Ghi cả lô (danh sách (file_key, record)) rồi flush một lần."""
+        if not keyed_records:
+            return
+        with self._write_lock:
+            for file_key, record in keyed_records:
+                if file_key != self._current_file_key:
+                    self._rotate_file(file_key)
+                try:
+                    line = json.dumps(record, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    # payload không mã hóa được: vẫn ghi dòng thay thế để không mất dấu vết
+                    fallback_record = dict(record, payload=repr(record.get("payload")), payload_encoding_error=True)
+                    line = json.dumps(fallback_record, ensure_ascii=False, default=str)
+                self._file_handle.write(line + "\n")
+            self._file_handle.flush()
 
-        # Thao tác với khóa luồng
-        with self._lock:
-            if key != self._current_key: # Nếu giờ/ngày trên khóa mới khác với khóa hiện tại, thì tạo file mới theo ngày và giờ
-                self._rotate(key)
-            self._fh.write(line) # Nhận dòng chuỗi chuyển đổi từ dict record 
-            self._count += 1 # Đếm số lượng message mới
-            # Nếu số message đếm đạt 50 hoặc thời gian hiện tại trôi qua 5 giây từ lần xả cuối thì xả dữ liệu vào file
-            if (self._count % self.flush_every == 0
-                    or time.monotonic() - self._last_flush >= self.flush_seconds):
-                self._fh.flush() # Xả dữ liệu vào file JSONL
-                self._last_flush = time.monotonic() # Cập nhật thời gian xả dữ liệu cuối cùng
-
-    # Hàm tạo file mới theo ngày và giờ, đóng file cũ nếu có
-    def _rotate(self, key):
-        if self._fh: # Đóng file cũ đang mở nếu có 
-            self._fh.close()
-        folder = self.root / self.source / key[0] # Tạo thư mục biểu thị ngày theo cấu trúc: data/raw/{source}/{YYYY-MM-DD}
-        folder.mkdir(parents=True, exist_ok=True) # Tạo thư mục nếu chưa tồn tại, không báo lỗi nếu đã tồn tại
-        self._fh = open(folder / f"{key[1]}.jsonl", "a", encoding="utf-8") # Đặt tên file theo cấu trúc (nâng giờ), mở file để ghi
-        self._current_key = key # Cập nhật khóa hiện tại theo ngày và giờ mới
-
-    # Đóng file JSONL khi không còn ghi dữ liệu nữa 
     def close(self):
-        with self._lock: # Thao tác với khóa luồng
-            if self._fh: # Nếu file đang mở thì đóng file
-                self._fh.close() 
-                self._fh = None
+        with self._write_lock:
+            if self._file_handle:
+                self._file_handle.close()
+                self._file_handle = None
+            self._current_file_key = None
+
+    def _rotate_file(self, file_key):
+        """Đóng tệp cũ (nếu có) và mở tệp của giờ mới ở chế độ ghi nối tiếp."""
+        if self._file_handle:
+            self._file_handle.close()
+        folder_path = self.root_directory / self.source / file_key[0]
+        folder_path.mkdir(parents=True, exist_ok=True)
+        self._file_handle = open(folder_path / f"{file_key[1]}.jsonl", "a", encoding="utf-8")
+        self._current_file_key = file_key

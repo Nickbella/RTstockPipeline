@@ -2,55 +2,57 @@ import logging
 import queue
 import threading
 
-log = logging.getLogger("dnse.sink")
-_STOP = object()   # poison pill
+logger = logging.getLogger("dnse.sink")
+_STOP_SIGNAL = object()   # poison pill: nằm sau mọi bản ghi đã vào queue
 
 
-# Class này dữ liệu vào file JSONL theo lô, dùng queue để gom các bản ghi lại rồi ghi một lần 
 class QueuedSink:
-    def __init__(self, writer, maxsize=100_000, batch_size=500):
-        self.writer = writer
-        self.q = queue.Queue(maxsize=maxsize)
-        self.batch_size = batch_size
-        self.dropped = 0        # Đếm số lượng bản ghi bị bỏ qua, tăng khi số bản ghi bị bỏ tăng
-        self.written = 0        # Số lượng bản ghi đã ghi vào file 
-        self._thread = threading.Thread(target=self._run, daemon=True) # Luồng chạy nền để ghi dữ liệu vào file JSONL
+    """Callback gọi enqueue_record() (không chặn); một luồng riêng gom bản ghi rồi ghi qua raw_writer.write_batch().
+
+    Chỉ luồng này chạm vào tệp nên không cần khóa. queue.Queue đã tự an toàn giữa các luồng.
+    """
+
+    def __init__(self, raw_writer, maximum_queue_size=100_000, maximum_batch_size=500):
+        self.raw_writer = raw_writer
+        self.record_queue = queue.Queue(maxsize=maximum_queue_size)
+        self.maximum_batch_size = maximum_batch_size
+        self.dropped_record_count = 0
+        self.written_record_count = 0
+        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
 
     def start(self):
-        self._thread.start()
+        self._writer_thread.start()
 
-    # Gửi một bản ghi vào queue, nếu queue đầy thì bỏ qua và đếm số lượng bản ghi bị bỏ
-    def put(self, item):
+    def enqueue_record(self, keyed_record):
         try:
-            self.q.put_nowait(item)      # Đẩy bản ghi vào queue liên tục đến khi queue đầy thì bỏ qua
+            self.record_queue.put_nowait(keyed_record)      # không bao giờ chặn event loop
         except queue.Full:
-            self.dropped += 1            # Queue đầy, tăng biến đếm số lượng bản ghi bị bỏ qua
+            self.dropped_record_count += 1                  # queue đầy thì bỏ và đếm
 
-    def stop(self, timeout=30):
-        self.q.put(_STOP)
-        self._thread.join(timeout)       # Chờ luồng ghi dừng lại, nếu timeout thì log cảnh báo lỗi
-        if self._thread.is_alive():
-            log.error("Luồng ghi chưa dừng sau %ss, còn ~%d bản ghi", timeout, self.q.qsize())
-        self.writer.close()
+    def stop(self, timeout_seconds=30):
+        """Gọi sau khi producer đã dừng. Ghi nốt phần còn lại rồi đóng tệp."""
+        self.record_queue.put(_STOP_SIGNAL)
+        self._writer_thread.join(timeout_seconds)
+        if self._writer_thread.is_alive():
+            logger.error("Luồng ghi chưa dừng sau %ss, còn khoảng %d bản ghi",
+                         timeout_seconds, self.record_queue.qsize())
+        self.raw_writer.close()
 
-    def _run(self):
-        stopping = False
-        while not stopping:
-            batch = [self.q.get()]                       # Lấy một bản ghi từ queue, nếu queue rỗng thì chờ
-            while len(batch) < self.batch_size:          # Nếu số lượng bản ghi trong lô chưa đủ batch_size thì tiếp tục lấy thêm từ queue
-                # Lấy liên tục các bản ghi từ queue, nếu queue rỗng thì dừng
+    def _writer_loop(self):
+        is_stopping = False
+        while not is_stopping:
+            record_batch = [self.record_queue.get()]                 # chờ đến khi có dữ liệu
+            while len(record_batch) < self.maximum_batch_size:       # gom thêm những gì đang sẵn có
                 try:
-                    batch.append(self.q.get_nowait())    
+                    record_batch.append(self.record_queue.get_nowait())
                 except queue.Empty:
                     break
-            # Nếu bản ghi cuối cùng trong lô là _STOP thì dừng luồng ghi
-            if batch[-1] is _STOP:                       # _STOP luôn là phần tử cuối cùng
-                batch.pop()
-                stopping = True
-            # Nếu lô có bản ghi thì ghi vào file JSONL
-            if batch:
+            if record_batch[-1] is _STOP_SIGNAL:                     # tín hiệu dừng luôn là phần tử cuối
+                record_batch.pop()
+                is_stopping = True
+            if record_batch:
                 try:
-                    self.writer.write_many(batch)        
-                    self.written += len(batch)
+                    self.raw_writer.write_batch(record_batch)        # ghi cả lô rồi flush một lần
+                    self.written_record_count += len(record_batch)
                 except Exception:
-                    log.exception("Lỗi ghi lô %d bản ghi", len(batch))
+                    logger.exception("Lỗi ghi lô %d bản ghi", len(record_batch))
