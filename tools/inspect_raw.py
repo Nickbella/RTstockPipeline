@@ -1,3 +1,4 @@
+"""Thống kê dữ liệu thô trong data/raw/dnse. Chạy từ thư mục gốc: python -m tools.inspect_raw"""
 import json
 import statistics
 from collections import Counter, defaultdict
@@ -5,38 +6,60 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-VN = ZoneInfo("Asia/Ho_Chi_Minh")
-topics, null_ts, symbols = Counter(), Counter(), defaultdict(Counter)
-first, last, lat, bad = {}, {}, [], 0
+VIETNAM_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
+# khóa mới -> khóa cũ (dữ liệu thu trước khi đổi tên vẫn đọc được)
+LEGACY_KEYS = {"event_timestamp_utc": "event_ts",
+               "collector_received_timestamp_utc": "recv_ts",
+               "sdk_received_timestamp_utc": "sdk_recv_ts"}
 
-for f in sorted(Path("data/raw/dnse").rglob("*.jsonl")):
-    with f.open(encoding="utf-8") as fh:
-        for line in fh:
+
+def read_field(record, key):
+    return record.get(key) or record.get(LEGACY_KEYS[key])
+
+
+message_counts, missing_event_counts, symbol_counts = Counter(), Counter(), defaultdict(Counter)
+first_time, last_time, invalid_line_count = {}, {}, 0
+delays = {"sàn -> SDK": [], "SDK -> collector": [], "sàn -> collector": []}
+
+for file_path in sorted(Path("data/raw/dnse").rglob("*.jsonl")):
+    with file_path.open(encoding="utf-8") as file_handle:
+        for line in file_handle:
             try:
-                r = json.loads(line)
+                record = json.loads(line)
             except ValueError:
-                bad += 1
+                invalid_line_count += 1
                 continue
-            t = r.get("topic")
-            topics[t] += 1
-            symbols[t][r.get("symbol")] += 1
-            rt = r.get("recv_ts")
-            first.setdefault(t, rt)
-            last[t] = rt
-            if r.get("event_ts") is None:
-                null_ts[t] += 1
-            elif t == "trade":
-                d = (datetime.fromisoformat(rt) - datetime.fromisoformat(r["event_ts"])).total_seconds()
-                lat.append(d)
+            topic = record.get("topic")
+            message_counts[topic] += 1
+            symbol_counts[topic][record.get("symbol")] += 1
+            collector_time_text = read_field(record, "collector_received_timestamp_utc")
+            first_time.setdefault(topic, collector_time_text)
+            last_time[topic] = collector_time_text
 
-print("Dòng hỏng:", bad)
-for t, n in topics.most_common():
-    a = datetime.fromisoformat(first[t]).astimezone(VN).strftime("%H:%M:%S")
-    b = datetime.fromisoformat(last[t]).astimezone(VN).strftime("%H:%M:%S")
-    print(f"\n=== {t}: {n} message | event_ts null: {null_ts[t]} | từ {a} đến {b} (giờ VN)")
-    print("Theo mã:", dict(symbols[t]))
+            event_time_text = read_field(record, "event_timestamp_utc")
+            if event_time_text is None:
+                missing_event_counts[topic] += 1
+            elif topic == "trade":
+                event_time = datetime.fromisoformat(event_time_text)
+                collector_time = datetime.fromisoformat(collector_time_text)
+                delays["sàn -> collector"].append((collector_time - event_time).total_seconds())
+                sdk_time_text = read_field(record, "sdk_received_timestamp_utc")
+                if sdk_time_text:
+                    sdk_time = datetime.fromisoformat(sdk_time_text)
+                    delays["sàn -> SDK"].append((sdk_time - event_time).total_seconds())
+                    delays["SDK -> collector"].append((collector_time - sdk_time).total_seconds())
 
-if lat:
-    lat.sort()
-    print(f"\nĐộ trễ trade (recv_ts - event_ts), giây: trung vị {statistics.median(lat):.2f}, "
-          f"p95 {lat[int(len(lat)*0.95)]:.2f}, nhỏ nhất {lat[0]:.2f}, lớn nhất {lat[-1]:.2f}")
+print("Dòng hỏng:", invalid_line_count)
+for topic, count in message_counts.most_common():
+    start = datetime.fromisoformat(first_time[topic]).astimezone(VIETNAM_TIMEZONE).strftime("%H:%M:%S")
+    end = datetime.fromisoformat(last_time[topic]).astimezone(VIETNAM_TIMEZONE).strftime("%H:%M:%S")
+    print(f"\n=== {topic}: {count} message | thiếu event_timestamp_utc: {missing_event_counts[topic]} "
+          f"| từ {start} đến {end} (giờ VN)")
+    print("Theo mã:", dict(symbol_counts[topic]))
+
+print()
+for name, values in delays.items():
+    if values:
+        values.sort()
+        print(f"Độ trễ {name}, giây: trung vị {statistics.median(values):.3f}, "
+              f"p95 {values[int(len(values) * 0.95)]:.3f}, nhỏ nhất {values[0]:.3f}, lớn nhất {values[-1]:.3f}")
