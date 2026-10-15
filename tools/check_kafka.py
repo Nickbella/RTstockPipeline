@@ -1,13 +1,4 @@
-"""Đếm message trên Kafka và đối chiếu với tệp JSONL của hôm nay.
-
-Chạy từ thư mục gốc: python -m tools.check_kafka --since 09:30
-Chỉ tính bản ghi có thời điểm collector nhận từ mốc --since (giờ VN, hôm nay) trở đi, áp dụng cho cả hai phía
-để so sánh công bằng. Chạy khi collector đã dừng để số liệu không đổi.
-"""
-import argparse
-import json
-import time
-import uuid
+import argparse, json, time, uuid
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
