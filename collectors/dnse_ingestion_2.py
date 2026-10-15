@@ -1,7 +1,8 @@
-"""Collector DNSE v2: callback -> queue -> một luồng ghi tệp.
+"""Collector DNSE v2: callback -> hai hàng đợi (tệp, Kafka tùy chọn) -> mỗi hàng đợi một luồng ghi.
 
 Chạy từ thư mục gốc dự án:
     python -u -m collectors.dnse_ingestion_2 --until 15:05
+    python -u -m collectors.dnse_ingestion_2 --until 15:05 --kafka-servers localhost:9092
     python -u -m collectors.dnse_ingestion_2 --duration 120 --limit 3 --topics trade,ohlc_1_minute,quote
 """
 import argparse
@@ -41,15 +42,15 @@ SDK_RECEIVED_FIELD_NAME = "receivedAt"  # trường trong payload: thời điể
 
 # topic: (tên hàm subscribe, tên tham số callback, tham số riêng, tên trường thời gian của sàn hoặc None)
 TOPIC_CONFIGURATIONS = {
-    "trade":          ("subscribe_trades", "on_trade", {"board_id": BOARD_ID}, "time"),
+    "trade":           ("subscribe_trades", "on_trade", {"board_id": BOARD_ID}, "time"),
     "ohlc_1_minute":   ("subscribe_ohlc", "on_ohlc", {"resolution": "1"}, "time"),
-    "quote":          ("subscribe_quotes", "on_quote", {"board_id": BOARD_ID}, None),
+    "quote":           ("subscribe_quotes", "on_quote", {"board_id": BOARD_ID}, None),
     "foreign_trading": ("subscribe_foreign_trading", "on_trade", {"board_id": BOARD_ID}, None),
-    "expected_price": ("subscribe_expected_price", "on_expected_price", {"board_id": BOARD_ID}, None),
+    "expected_price":  ("subscribe_expected_price", "on_expected_price", {"board_id": BOARD_ID}, None),
 }
 
 raw_writer = RawWriter("dnse")
-record_sink = QueuedSink(raw_writer)
+record_sinks = {"file": QueuedSink(raw_writer)}    # sink "kafka" được thêm trong main nếu bật --kafka-servers
 message_counts = Counter()
 connection_state = {"last_message_time": time.monotonic()}
 sequence_counter = itertools.count(1)   # số thứ tự tăng dần, dùng để dò mất hoặc lệch thứ tự
@@ -80,7 +81,7 @@ def load_symbols(maximum_symbols=None):
 
 
 def create_message_handler(topic_name, timestamp_field_name):
-    """PRODUCER: chạy trong event loop, chỉ tạo bản ghi rồi đẩy vào queue, không ghi tệp."""
+    """PRODUCER: chạy trong event loop, chỉ tạo bản ghi rồi đẩy vào các queue, không ghi tệp, không gọi Kafka."""
     def handle_message(message):
         try:
             connection_state["last_message_time"] = time.monotonic()
@@ -96,7 +97,8 @@ def create_message_handler(topic_name, timestamp_field_name):
                 sdk_received_timestamp_utc=safe_to_utc_iso_string(message_dictionary.get(SDK_RECEIVED_FIELD_NAME)),
                 sequence_number=next(sequence_counter),
             )
-            record_sink.enqueue_record(keyed_record)
+            for record_sink in record_sinks.values():     # cùng một bản ghi cho mọi đích, chỉ đọc nên an toàn
+                record_sink.enqueue_record(keyed_record)
             message_counts[topic_name] += 1
         except Exception:
             logger.exception("Lỗi xử lý message %s", topic_name)
@@ -111,12 +113,23 @@ def is_continuous_trading_time(current_time):
     return current_time.weekday() < 5 and (in_morning or in_afternoon)
 
 
+def describe_sinks():
+    """Một dòng tóm tắt cho mỗi đích ghi: đã ghi, bỏ, queue (và số gửi thành công/lỗi nếu là Kafka)."""
+    descriptions = []
+    for sink_name, record_sink in record_sinks.items():
+        text = (f"{sink_name}: ghi {record_sink.written_record_count} bỏ {record_sink.dropped_record_count} "
+                f"queue {record_sink.record_queue.qsize()}")
+        delivered = getattr(record_sink.batch_writer, "delivered_message_count", None)
+        if delivered is not None:
+            text += f" xác nhận {delivered} lỗi {record_sink.batch_writer.failed_message_count}"
+        descriptions.append(text)
+    return " | ".join(descriptions)
+
+
 async def log_statistics_periodically():
     while True:
         await asyncio.sleep(30)
-        logger.info("Nhận %s | đã ghi %d | bỏ %d | queue %d | im lặng %.0fs",
-                    dict(message_counts), record_sink.written_record_count,
-                    record_sink.dropped_record_count, record_sink.record_queue.qsize(),
+        logger.info("Nhận %s | %s | im lặng %.0fs", dict(message_counts), describe_sinks(),
                     time.monotonic() - connection_state["last_message_time"])
 
 
@@ -145,9 +158,20 @@ async def run_connection_session(topic_names, symbols, stop_time):
                 raise RuntimeError(f"Không có message trong {SILENCE_LIMIT_SECONDS}s")
     finally:
         try:
-            await dnse_client.disconnect()      # dừng producer trước khi dừng consumer
+            await dnse_client.disconnect()      # dừng producer trước khi dừng các consumer
         except Exception as error:
             logger.warning("Lỗi khi ngắt kết nối: %s", error)
+
+
+def add_kafka_sink(kafka_servers, topic_names):
+    """Thêm sink Kafka. Kafka lỗi chỉ cảnh báo, không bao giờ làm collector dừng hay ngừng ghi tệp."""
+    from utils.kafka_writer import KafkaWriter, create_missing_topics   # nhập muộn: không cần cài confluent-kafka nếu không dùng Kafka
+    try:
+        created_topics = create_missing_topics(kafka_servers, topic_names)
+        logger.info("Kafka %s sẵn sàng. Topic mới tạo: %s", kafka_servers, created_topics or "không có")
+    except Exception as error:
+        logger.warning("Chưa kiểm tra/tạo được topic Kafka (%s). Vẫn tiếp tục, producer sẽ tự thử kết nối lại", error)
+    record_sinks["kafka"] = QueuedSink(KafkaWriter(kafka_servers))
 
 
 async def main(arguments):
@@ -156,6 +180,8 @@ async def main(arguments):
     if invalid_topics:
         raise SystemExit(f"Topic không hợp lệ: {invalid_topics}. Hợp lệ: {list(TOPIC_CONFIGURATIONS)}")
     symbols = load_symbols(arguments.limit)
+    if arguments.kafka_servers:
+        add_kafka_sink(arguments.kafka_servers, topic_names)
 
     current_time = datetime.now(VIETNAM_TIMEZONE)
     stop_time = None
@@ -165,7 +191,8 @@ async def main(arguments):
         hour, minute = map(int, arguments.until.split(":"))
         stop_time = current_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    record_sink.start()
+    for record_sink in record_sinks.values():
+        record_sink.start()
     statistics_task = asyncio.create_task(log_statistics_periodically())
     retry_delay_seconds = 1
     try:
@@ -180,9 +207,9 @@ async def main(arguments):
                 retry_delay_seconds = 1 if session_was_stable else min(retry_delay_seconds * 2, 60)
     finally:
         statistics_task.cancel()
-        record_sink.stop()                      # poison pill: ghi nốt phần còn trong queue
-        logger.info("Kết thúc. Đã ghi %d | bỏ %d",
-                    record_sink.written_record_count, record_sink.dropped_record_count)
+        for record_sink in record_sinks.values():
+            record_sink.stop()                  # poison pill: ghi nốt phần còn trong queue
+        logger.info("Kết thúc. %s", describe_sinks())
 
 
 if __name__ == "__main__":
@@ -192,6 +219,8 @@ if __name__ == "__main__":
     argument_parser.add_argument("--topics", default="trade,ohlc_1_minute",
                                  help=f"Hợp lệ: {','.join(TOPIC_CONFIGURATIONS)}")
     argument_parser.add_argument("--limit", type=int, help="Chỉ lấy N mã đầu trong config/vn30.txt")
+    argument_parser.add_argument("--kafka-servers", default=os.getenv("KAFKA_BOOTSTRAP_SERVERS"),
+                                 help="Địa chỉ Kafka, ví dụ localhost:9092. Bỏ trống thì chỉ ghi tệp")
     try:
         asyncio.run(main(argument_parser.parse_args()))
     except KeyboardInterrupt:
