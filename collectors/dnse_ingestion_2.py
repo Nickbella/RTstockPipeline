@@ -45,8 +45,8 @@ TOPIC_CONFIGURATIONS = {
     "trade":           ("subscribe_trades", "on_trade", {"board_id": BOARD_ID}, "time"),
     "ohlc_1_minute":   ("subscribe_ohlc", "on_ohlc", {"resolution": "1"}, "time"),
     "quote":           ("subscribe_quotes", "on_quote", {"board_id": BOARD_ID}, None),
-    "foreign_trading": ("subscribe_foreign_trading", "on_trade", {"board_id": BOARD_ID}, None),
-    "expected_price":  ("subscribe_expected_price", "on_expected_price", {"board_id": BOARD_ID}, None),
+    "foreign_trading": ("subscribe_foreign_trading", "on_trade", {"board_id": BOARD_ID}, "time"),
+    "expected_price":  ("subscribe_expected_price", "on_expected_price", {"board_id": BOARD_ID}, "time"),
 }
 
 raw_writer = RawWriter("dnse")

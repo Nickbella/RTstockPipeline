@@ -1,6 +1,7 @@
 """Thống kê dữ liệu thô trong data/raw/dnse. Chạy từ thư mục gốc: python -m tools.inspect_raw"""
 import json
 import statistics
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +22,11 @@ message_counts, missing_event_counts, symbol_counts = Counter(), Counter(), defa
 first_time, last_time, invalid_line_count = {}, {}, 0
 delays = {"sàn -> SDK": [], "SDK -> collector": [], "sàn -> collector": []}
 
-for file_path in sorted(Path("data/raw/dnse").rglob("*.jsonl")):
+selected_date = sys.argv[1] if len(sys.argv) > 1 else datetime.now(VIETNAM_TIMEZONE).strftime("%Y-%m-%d")
+file_paths = sorted((Path("data/raw/dnse") / selected_date).glob("*.jsonl"))
+print(f"Ngày: {selected_date} | đọc {len(file_paths)} tệp")
+
+for file_path in file_paths:
     with file_path.open(encoding="utf-8") as file_handle:
         for line in file_handle:
             try:
