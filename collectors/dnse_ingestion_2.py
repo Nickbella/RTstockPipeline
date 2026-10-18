@@ -13,14 +13,14 @@ import logging
 import os
 import time
 from collections import Counter
-from datetime import datetime, time as time_of_day_type, timedelta
+from datetime import datetime, time as time_of_day_type, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from dnse import TradingClient
 
-from utils.datetime_solving import safe_to_utc_iso_string
+from utils.datetime_solving import safe_to_utc_iso_string, time_of_day_to_utc_iso_string
 from utils.queued_sink import QueuedSink
 from utils.raw_writer import RawWriter
 
@@ -30,8 +30,6 @@ logger = logging.getLogger("dnse")
 
 API_KEY = os.getenv("DNSE_API_KEY")
 API_SECRET = os.getenv("DNSE_API_SECRET")
-if not API_KEY or not API_SECRET:
-    raise SystemExit("Thiếu DNSE_API_KEY hoặc DNSE_API_SECRET trong .env")
 
 WEBSOCKET_URL = os.getenv("DNSE_WS_URL", "wss://ws-openapi.dnse.com.vn")
 MESSAGE_ENCODING = os.getenv("DNSE_ENCODING", "msgpack")
@@ -44,10 +42,18 @@ SDK_RECEIVED_FIELD_NAME = "receivedAt"  # trường trong payload: thời điể
 TOPIC_CONFIGURATIONS = {
     "trade":           ("subscribe_trades", "on_trade", {"board_id": BOARD_ID}, "time"),
     "ohlc_1_minute":   ("subscribe_ohlc", "on_ohlc", {"resolution": "1"}, "time"),
-    "quote":           ("subscribe_quotes", "on_quote", {"board_id": BOARD_ID}, None),
-    "foreign_trading": ("subscribe_foreign_trading", "on_trade", {"board_id": BOARD_ID}, "time"),
+    "quote":           ("subscribe_quotes", "on_quote", {"board_id": BOARD_ID}, "time"),
+    "foreign_trading": ("subscribe_foreign_trading", "on_trade", {"board_id": BOARD_ID}, "transactTime"),
     "expected_price":  ("subscribe_expected_price", "on_expected_price", {"board_id": BOARD_ID}, "time"),
 }
+
+def convert_foreign_trading_time(time_text):
+    """transactTime của foreign_trading là giờ UTC trong ngày dạng HHMMSSmmm (không có ngày)."""
+    return time_of_day_to_utc_iso_string(time_text, datetime.now(timezone.utc))
+
+
+# Topic nào không có trong bảng này thì trường thời gian là chuỗi hoặc epoch thông thường.
+EVENT_TIME_CONVERTERS = {"foreign_trading": convert_foreign_trading_time}
 
 raw_writer = RawWriter("dnse")
 record_sinks = {"file": QueuedSink(raw_writer)}    # sink "kafka" được thêm trong main nếu bật --kafka-servers
@@ -82,6 +88,8 @@ def load_symbols(maximum_symbols=None):
 
 def create_message_handler(topic_name, timestamp_field_name):
     """PRODUCER: chạy trong event loop, chỉ tạo bản ghi rồi đẩy vào các queue, không ghi tệp, không gọi Kafka."""
+    convert_event_time = EVENT_TIME_CONVERTERS.get(topic_name, safe_to_utc_iso_string)
+
     def handle_message(message):
         try:
             connection_state["last_message_time"] = time.monotonic()
@@ -92,7 +100,7 @@ def create_message_handler(topic_name, timestamp_field_name):
                 topic=topic_name,
                 payload=message_dictionary,
                 symbol=message_dictionary.get("symbol"),
-                event_timestamp_utc=(safe_to_utc_iso_string(message_dictionary.get(timestamp_field_name))
+                event_timestamp_utc=(convert_event_time(message_dictionary.get(timestamp_field_name))
                                      if timestamp_field_name else None),
                 sdk_received_timestamp_utc=safe_to_utc_iso_string(message_dictionary.get(SDK_RECEIVED_FIELD_NAME)),
                 sequence_number=next(sequence_counter),
