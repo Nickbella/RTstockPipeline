@@ -1,10 +1,3 @@
-"""Collector DNSE v2: callback -> hai hàng đợi (tệp, Kafka tùy chọn) -> mỗi hàng đợi một luồng ghi.
-
-Chạy từ thư mục gốc dự án:
-    python -u -m collectors.dnse_ingestion_2 --until 15:05
-    python -u -m collectors.dnse_ingestion_2 --until 15:05 --kafka-servers localhost:9092
-    python -u -m collectors.dnse_ingestion_2 --duration 120 --limit 3 --topics trade,ohlc_1_minute,quote
-"""
 import argparse
 import asyncio
 import dataclasses
