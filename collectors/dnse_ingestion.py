@@ -71,7 +71,7 @@ def to_dict(obj):
         return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
     return {"repr": repr(obj)}
 
-
+# Tạo hàm xử lý message cho từng topic, ghi log và đếm số lượng message
 def make_handler(topic):
     def handler(msg):
         try:
