@@ -1,6 +1,6 @@
 import argparse, json, time, uuid
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -18,10 +18,14 @@ def read_received_time(record):
     return datetime.fromisoformat(text)
 
 
-def count_file_records(topic_names, since_time):
+def count_file_records(topic_names, since_time, date_str):
     counts = Counter()
-    today_directory = RAW_DATA_DIRECTORY / datetime.now(VIETNAM_TIMEZONE).strftime("%Y-%m-%d")
-    for file_path in sorted(today_directory.glob("*.jsonl")):
+    # Dùng date_str truyền vào thay vì cố định datetime.now()
+    target_directory = RAW_DATA_DIRECTORY / date_str
+    if not target_directory.exists():
+        return counts
+        
+    for file_path in sorted(target_directory.glob("*.jsonl")):
         with file_path.open(encoding="utf-8") as file_handle:
             for line in file_handle:
                 try:
@@ -33,16 +37,16 @@ def count_file_records(topic_names, since_time):
                     counts[kafka_topic_name] += 1
     return counts
 
-
-def count_kafka_messages(bootstrap_servers, topic_names, since_time, idle_seconds):
+def count_kafka_messages(bootstrap_servers, topic_names, since_time, until_time, idle_seconds):
     consumer = Consumer({
         "bootstrap.servers": bootstrap_servers,
-        "group.id": f"check-kafka-{uuid.uuid4()}",     # nhóm dùng một lần, không ảnh hưởng consumer thật
+        "group.id": f"check-kafka-{uuid.uuid4()}",
         "auto.offset.reset": "earliest",
         "enable.auto.commit": False,
     })
     consumer.subscribe(sorted(topic_names))
     counts, last_message_time = Counter(), time.monotonic()
+    
     while time.monotonic() - last_message_time < idle_seconds:
         message = consumer.poll(1.0)
         if message is None or message.error():
@@ -52,19 +56,29 @@ def count_kafka_messages(bootstrap_servers, topic_names, since_time, idle_second
             record = json.loads(message.value())
         except ValueError:
             continue
-        if read_received_time(record) >= since_time:
+            
+        # Lọc bản tin nằm trong đúng khoảng từ since_time đến until_time của ngày đó
+        msg_time = read_received_time(record)
+        if since_time <= msg_time <= until_time:
             counts[message.topic()] += 1
+            
     consumer.close()
     return counts
 
-
 def main(arguments):
     hour, minute = map(int, arguments.since.split(":"))
-    since_time = datetime.now(VIETNAM_TIMEZONE).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # 1. Tính mốc since_time theo ngày truyền từ arguments.date
+    year, month, day = map(int, arguments.date.split("-"))
+    since_time = datetime(year, month, day, hour, minute, tzinfo=VIETNAM_TIMEZONE)
+    
     topic_names = {to_kafka_topic_name(name.strip()) for name in arguments.topics.split(",") if name.strip()}
 
-    file_counts = count_file_records(topic_names, since_time)
-    kafka_counts = count_kafka_messages(arguments.servers, topic_names, since_time, arguments.idle_seconds)
+    # 2. Truyền thêm arguments.date vào hàm count_file_records
+    file_counts = count_file_records(topic_names, since_time, arguments.date)
+    
+    # 3. Tính mốc until_time theo ngày truyền từ arguments.date
+    until_time = datetime(year, month, day, 23, 59, 59, tzinfo=VIETNAM_TIMEZONE)
+    kafka_counts = count_kafka_messages(arguments.servers, topic_names, since_time, until_time, arguments.idle_seconds)
 
     print(f"{'topic Kafka':<24}{'tệp':>10}{'kafka':>10}{'chênh lệch':>12}")
     for topic_name in sorted(topic_names):
@@ -74,6 +88,7 @@ def main(arguments):
 
 if __name__ == "__main__":
     argument_parser = argparse.ArgumentParser()
+    argument_parser.add_argument("--date", default=datetime.now(VIETNAM_TIMEZONE).strftime("%Y-%m-%d"), help="Ngày YYYY-MM-DD")
     argument_parser.add_argument("--since", default="00:00", help="Mốc HH:MM giờ VN hôm nay, mặc định 00:00")
     argument_parser.add_argument("--servers", default="localhost:9092")
     argument_parser.add_argument("--topics", default="trade,ohlc_1_minute,quote",

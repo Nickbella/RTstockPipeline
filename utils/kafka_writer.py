@@ -15,9 +15,9 @@ def to_kafka_topic_name(topic, topic_prefix="dnse-"):
     return topic_prefix + topic.replace("_", "-")
 
 
+# Tạo các topic Kafka nếu chưa có, bỏ qua lỗi nếu topic đã tồn tại 
 def create_missing_topics(bootstrap_servers, topics, partition_count=3, timeout_seconds=10,
                           topic_prefix="dnse-"):
-    """Tạo các topic Kafka còn thiếu (replication factor 1 vì chỉ có một broker). Trả về danh sách tên đã tạo."""
     admin_client = AdminClient({"bootstrap.servers": bootstrap_servers})
     existing_topic_names = admin_client.list_topics(timeout=timeout_seconds).topics
     new_topics = [NewTopic(name, num_partitions=partition_count, replication_factor=1)
