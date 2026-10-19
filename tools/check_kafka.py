@@ -1,6 +1,14 @@
-import argparse, json, time, uuid
+"""Đối chiếu số bản ghi hôm nay giữa tệp JSONL và Kafka. Chạy từ thư mục gốc: python -m tools.check_kafka --since 09:30
+
+Chỉ tính bản ghi có thời điểm collector nhận từ mốc --since (giờ VN) trở đi, áp dụng cho cả hai phía.
+Chạy khi collector đã dừng để số liệu không đổi.
+"""
+import argparse
+import json
+import time
+import uuid
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -8,91 +16,52 @@ from confluent_kafka import Consumer
 
 from utils.kafka_writer import to_kafka_topic_name
 
-VIETNAM_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
-RAW_DATA_DIRECTORY = Path("data/raw/dnse")
+TOPICS = ["trade", "ohlc_1_minute", "quote", "foreign_trading", "expected_price"]
+IDLE_SECONDS = 10                       # dừng đọc Kafka khi không có message mới trong ngần ấy giây
+
+argument_parser = argparse.ArgumentParser()
+argument_parser.add_argument("--since", default="00:00", help="Mốc HH:MM giờ VN hôm nay")
+argument_parser.add_argument("--servers", default="localhost:9092")
+arguments = argument_parser.parse_args()
+
+today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+hour, minute = map(int, arguments.since.split(":"))
+since_time = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def read_received_time(record):
-    """Đọc thời điểm collector nhận (khóa mới, hoặc khóa cũ recv_ts của dữ liệu thu trước đây)."""
-    text = record.get("collector_received_timestamp_utc") or record.get("recv_ts")
-    return datetime.fromisoformat(text)
+def read_file_lines():
+    for file_path in sorted((Path("data/raw/dnse") / today.strftime("%Y-%m-%d")).glob("*.jsonl")):
+        yield from file_path.open(encoding="utf-8")
 
 
-def count_file_records(topic_names, since_time, date_str):
-    counts = Counter()
-    # Dùng date_str truyền vào thay vì cố định datetime.now()
-    target_directory = RAW_DATA_DIRECTORY / date_str
-    if not target_directory.exists():
-        return counts
-        
-    for file_path in sorted(target_directory.glob("*.jsonl")):
-        with file_path.open(encoding="utf-8") as file_handle:
-            for line in file_handle:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                kafka_topic_name = to_kafka_topic_name(record.get("topic", ""))
-                if kafka_topic_name in topic_names and read_received_time(record) >= since_time:
-                    counts[kafka_topic_name] += 1
-    return counts
-
-def count_kafka_messages(bootstrap_servers, topic_names, since_time, until_time, idle_seconds):
-    consumer = Consumer({
-        "bootstrap.servers": bootstrap_servers,
-        "group.id": f"check-kafka-{uuid.uuid4()}",
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": False,
-    })
-    consumer.subscribe(sorted(topic_names))
-    counts, last_message_time = Counter(), time.monotonic()
-    
-    while time.monotonic() - last_message_time < idle_seconds:
+def read_kafka_values():
+    consumer = Consumer({"bootstrap.servers": arguments.servers, "group.id": f"check-kafka-{uuid.uuid4()}",
+                         "auto.offset.reset": "earliest", "enable.auto.commit": False})
+    consumer.subscribe([to_kafka_topic_name(topic) for topic in TOPICS])
+    last_message_time = time.monotonic()
+    while time.monotonic() - last_message_time < IDLE_SECONDS:
         message = consumer.poll(1.0)
-        if message is None or message.error():
-            continue
-        last_message_time = time.monotonic()
-        try:
-            record = json.loads(message.value())
-        except ValueError:
-            continue
-            
-        # Lọc bản tin nằm trong đúng khoảng từ since_time đến until_time của ngày đó
-        msg_time = read_received_time(record)
-        if since_time <= msg_time <= until_time:
-            counts[message.topic()] += 1
-            
+        if message is not None and not message.error():
+            last_message_time = time.monotonic()
+            yield message.value()
     consumer.close()
+
+
+def count_records(raw_records):
+    counts = Counter()
+    for raw_record in raw_records:
+        try:
+            record = json.loads(raw_record)
+            if datetime.fromisoformat(record["collector_received_timestamp_utc"]) >= since_time:
+                counts[record["topic"]] += 1
+        except (ValueError, KeyError, TypeError):
+            continue
     return counts
 
-def main(arguments):
-    hour, minute = map(int, arguments.since.split(":"))
-    # 1. Tính mốc since_time theo ngày truyền từ arguments.date
-    year, month, day = map(int, arguments.date.split("-"))
-    since_time = datetime(year, month, day, hour, minute, tzinfo=VIETNAM_TIMEZONE)
-    
-    topic_names = {to_kafka_topic_name(name.strip()) for name in arguments.topics.split(",") if name.strip()}
 
-    # 2. Truyền thêm arguments.date vào hàm count_file_records
-    file_counts = count_file_records(topic_names, since_time, arguments.date)
-    
-    # 3. Tính mốc until_time theo ngày truyền từ arguments.date
-    until_time = datetime(year, month, day, 23, 59, 59, tzinfo=VIETNAM_TIMEZONE)
-    kafka_counts = count_kafka_messages(arguments.servers, topic_names, since_time, until_time, arguments.idle_seconds)
-
-    print(f"{'topic Kafka':<24}{'tệp':>10}{'kafka':>10}{'chênh lệch':>12}")
-    for topic_name in sorted(topic_names):
-        difference = kafka_counts[topic_name] - file_counts[topic_name]
-        print(f"{topic_name:<24}{file_counts[topic_name]:>10}{kafka_counts[topic_name]:>10}{difference:>12}")
-
-
-if __name__ == "__main__":
-    argument_parser = argparse.ArgumentParser()
-    argument_parser.add_argument("--date", default=datetime.now(VIETNAM_TIMEZONE).strftime("%Y-%m-%d"), help="Ngày YYYY-MM-DD")
-    argument_parser.add_argument("--since", default="00:00", help="Mốc HH:MM giờ VN hôm nay, mặc định 00:00")
-    argument_parser.add_argument("--servers", default="localhost:9092")
-    argument_parser.add_argument("--topics", default="trade,ohlc_1_minute,quote",
-                                 help="Tên topic của collector (không có tiền tố dnse-)")
-    argument_parser.add_argument("--idle-seconds", type=int, default=10,
-                                 help="Dừng đọc khi không có message mới trong N giây")
-    main(argument_parser.parse_args())
+file_counts, kafka_counts = count_records(read_file_lines()), count_records(read_kafka_values())
+print(f"{'topic':<18}{'tệp':>10}{'kafka':>10}{'chênh lệch':>12}")
+for topic in TOPICS:
+    print(f"{topic:<18}{file_counts[topic]:>10}{kafka_counts[topic]:>10}{kafka_counts[topic] - file_counts[topic]:>12}")
+if file_counts and not kafka_counts:
+    print("Cảnh báo: không đọc được message nào từ Kafka (kiểm tra container kafka và tham số --servers)")
