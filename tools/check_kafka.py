@@ -1,8 +1,3 @@
-"""Đối chiếu số bản ghi hôm nay giữa tệp JSONL và Kafka. Chạy từ thư mục gốc: python -m tools.check_kafka --since 09:30
-
-Chỉ tính bản ghi có thời điểm collector nhận từ mốc --since (giờ VN) trở đi, áp dụng cho cả hai phía.
-Chạy khi collector đã dừng để số liệu không đổi.
-"""
 import argparse
 import json
 import time
