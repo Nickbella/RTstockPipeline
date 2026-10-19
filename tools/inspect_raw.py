@@ -1,8 +1,3 @@
-"""Thống kê dữ liệu thô của MỘT ngày trong data/raw/dnse.
-
-Chạy từ thư mục gốc: python -m tools.inspect_raw              (hôm nay, giờ VN)
-                      python -m tools.inspect_raw 2026-10-16   (ngày cụ thể)
-"""
 import json
 import sys
 from collections import Counter, defaultdict
