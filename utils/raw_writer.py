@@ -19,17 +19,17 @@ class RawWriter:
         """Tạo bản ghi (chạy ở producer, không đụng tới tệp). Trả về (file_key, record)."""
         current_utc_time = datetime.now(timezone.utc)
         record = {
-            "source": self.source,
-            "topic": topic,
-            "symbol": symbol,
-            "event_timestamp_utc": event_timestamp_utc,
-            "collector_received_timestamp_utc": current_utc_time.isoformat(),
+            "Nguồn dữ liệu": self.source,
+            "Chủ đề": topic,
+            "Mã CK": symbol,
+            "Thời gian gốc (UTC)": event_timestamp_utc,
+            "Thời gian collector ghi nhận (UTC)": current_utc_time.isoformat(),
         }
         if sdk_received_timestamp_utc is not None:
-            record["sdk_received_timestamp_utc"] = sdk_received_timestamp_utc
+            record["Thời gian SDK ghi nhận (UTC)"] = sdk_received_timestamp_utc
         if sequence_number is not None:
-            record["sequence_number"] = sequence_number
-        record["payload"] = payload
+            record["Số thứ tự"] = sequence_number
+        record["Nội dung gốc"] = payload
 
         local_time = current_utc_time.astimezone(self.exchange_timezone)
         file_key = (local_time.strftime("%Y-%m-%d"), local_time.strftime("%H"))
