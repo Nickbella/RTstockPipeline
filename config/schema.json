@@ -1,0 +1,35 @@
+{
+  "keys": {
+    "nguon": ["Nguồn dữ liệu", "source"],
+    "topic": ["Chủ đề", "topic"],
+    "ma": ["Mã CK", "symbol"],
+    "payload": ["Nội dung gốc", "payload"],
+    "stt": ["Số thứ tự", "sequence_number", "seq"],
+    "san": ["Thời gian gốc (UTC)", "event_timestamp_utc", "event_ts"],
+    "nhan": ["Thời gian collector ghi nhận (UTC)", "collector_received_timestamp_utc", "recv_ts"],
+    "sdk": ["Thời gian SDK ghi nhận (UTC)", "sdk_received_timestamp_utc", "sdk_recv_ts"]
+  },
+  "fields": {
+    "trade": {
+      "gia": ["price", "float", "numeric(12,3)"],
+      "khoi_luong": ["quantity", "int", "bigint"],
+      "khoi_luong_luy_ke": ["totalVolumeTraded", "int", "bigint"],
+      "ma_phien": ["tradingSessionId", "str", "text"],
+      "san_giao_dich": ["marketId", "str", "text"]
+    },
+    "ohlc_1_minute": {
+      "mo": ["open", "float", "numeric(12,3)"],
+      "cao": ["high", "float", "numeric(12,3)"],
+      "thap": ["low", "float", "numeric(12,3)"],
+      "dong": ["close", "float", "numeric(12,3)"],
+      "khoi_luong": ["volume", "int", "bigint"],
+      "cap_nhat": ["lastUpdated", "int", "bigint"],
+      "loai": ["type", "str", "text"],
+      "do_phan_giai": ["resolution", "str", "text"]
+    }
+  },
+  "required": {
+    "trade": ["gia", "khoi_luong"],
+    "ohlc_1_minute": ["mo", "cao", "thap", "dong"]
+  }
+}

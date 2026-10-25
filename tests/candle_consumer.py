@@ -3,7 +3,7 @@ import json, logging, os, time
 from collections import defaultdict
 from datetime import timedelta
 from confluent_kafka import Consumer, Producer
-from consumer.candle_builder import build_candles, floor_time
+from tests.candle_builder import build_candles, floor_time
 from consumer.normalizer import to_trade
 
 log = logging.getLogger("dnse.candles")
