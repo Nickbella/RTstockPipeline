@@ -44,14 +44,15 @@ class KafkaWriter:
 
     def write_batch(self, keyed_records):
         for _file_key, record in keyed_records:
-            symbol = record.get("symbol")
+            topic = record.get("Chủ đề") or record.get("topic")
+            symbol = record.get("Mã CK") or record.get("symbol")
             try:
                 self.producer.produce(
-                    to_kafka_topic_name(record["topic"], self.topic_prefix),
+                    to_kafka_topic_name(topic, self.topic_prefix),
                     value=json.dumps(record, ensure_ascii=False, default=str).encode("utf-8"),
                     key=symbol.encode("utf-8") if symbol else None,
                     on_delivery=self._on_delivery)
-            except BufferError:                           # hàng đợi nội bộ đầy: bỏ bản ghi này (tệp vẫn còn)
+            except BufferError:
                 self.failed_message_count += 1
         self.producer.poll(0)                             # xử lý các callback giao hàng đang chờ
 

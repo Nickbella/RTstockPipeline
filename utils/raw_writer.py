@@ -47,7 +47,7 @@ class RawWriter:
                     line = json.dumps(record, ensure_ascii=False, default=str)
                 except (TypeError, ValueError):
                     # payload không mã hóa được: vẫn ghi dòng thay thế để không mất dấu vết
-                    fallback_record = dict(record, payload=repr(record.get("payload")), payload_encoding_error=True)
+                    fallback_record = dict(record, **{"Nội dung gốc": repr(record.get("Nội dung gốc")), "payload_encoding_error": True})
                     line = json.dumps(fallback_record, ensure_ascii=False, default=str)
                 self._file_handle.write(line + "\n")
             self._file_handle.flush()
