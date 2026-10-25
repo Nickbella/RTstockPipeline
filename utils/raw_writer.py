@@ -6,23 +6,6 @@ from zoneinfo import ZoneInfo
 
 
 class RawWriter:
-    """Ghi mỗi message thành một dòng JSON (JSON Lines), đổi tệp theo giờ.
-
-    Cấu trúc tệp: data/raw/{source}/{YYYY-MM-DD}/{HH}.jsonl (ngày và giờ theo múi giờ của sàn).
-
-    Khóa JSON của mỗi bản ghi (trùng tên biến trong code):
-        source                            nguồn dữ liệu
-        topic                             loại dữ liệu (trade, ohlc_1_minute, ...)
-        symbol                            mã chứng khoán
-        event_timestamp_utc               thời gian sự kiện do sàn gửi, đã chuẩn hóa về UTC (có thể null)
-        collector_received_timestamp_utc  thời điểm callback của collector nhận message, UTC
-        sdk_received_timestamp_utc        thời điểm SDK nhận message (từ trường receivedAt trong payload), UTC
-        sequence_number                   số thứ tự tăng dần của bản ghi
-        payload                           nội dung gốc của message, không chỉnh sửa
-
-    Dữ liệu thu trước đây dùng tên cũ: event_ts, recv_ts, sdk_recv_ts, seq (xem tools/inspect_raw.py).
-    """
-
     def __init__(self, source, exchange_timezone="Asia/Ho_Chi_Minh", root_directory="data/raw"):
         self.source = source
         self.exchange_timezone = ZoneInfo(exchange_timezone)
@@ -36,17 +19,17 @@ class RawWriter:
         """Tạo bản ghi (chạy ở producer, không đụng tới tệp). Trả về (file_key, record)."""
         current_utc_time = datetime.now(timezone.utc)
         record = {
-            "source": self.source,
-            "topic": topic,
-            "symbol": symbol,
-            "event_timestamp_utc": event_timestamp_utc,
-            "collector_received_timestamp_utc": current_utc_time.isoformat(),
+            "Nguồn dữ liệu": self.source,
+            "Chủ đề": topic,
+            "Mã CK": symbol,
+            "Thời gian gốc (UTC)": event_timestamp_utc,
+            "Thời gian collector ghi nhận (UTC)": current_utc_time.isoformat(),
         }
         if sdk_received_timestamp_utc is not None:
-            record["sdk_received_timestamp_utc"] = sdk_received_timestamp_utc
+            record["Thời gian SDK ghi nhận (UTC)"] = sdk_received_timestamp_utc
         if sequence_number is not None:
-            record["sequence_number"] = sequence_number
-        record["payload"] = payload
+            record["Số thứ tự"] = sequence_number
+        record["Nội dung gốc"] = payload
 
         local_time = current_utc_time.astimezone(self.exchange_timezone)
         file_key = (local_time.strftime("%Y-%m-%d"), local_time.strftime("%H"))
@@ -64,7 +47,7 @@ class RawWriter:
                     line = json.dumps(record, ensure_ascii=False, default=str)
                 except (TypeError, ValueError):
                     # payload không mã hóa được: vẫn ghi dòng thay thế để không mất dấu vết
-                    fallback_record = dict(record, payload=repr(record.get("payload")), payload_encoding_error=True)
+                    fallback_record = dict(record, **{"Nội dung gốc": repr(record.get("Nội dung gốc")), "payload_encoding_error": True})
                     line = json.dumps(fallback_record, ensure_ascii=False, default=str)
                 self._file_handle.write(line + "\n")
             self._file_handle.flush()

@@ -7,13 +7,13 @@ _STOP_SIGNAL = object()   # poison pill: nằm sau mọi bản ghi đã vào que
 
 
 class QueuedSink:
-    """Callback gọi enqueue_record() (không chặn); một luồng riêng gom bản ghi rồi ghi qua raw_writer.write_batch().
+    """Callback gọi enqueue_record() (không chặn); một luồng riêng gom bản ghi rồi ghi qua batch_writer.write_batch().
 
     Chỉ luồng này chạm vào tệp nên không cần khóa. queue.Queue đã tự an toàn giữa các luồng.
     """
 
-    def __init__(self, raw_writer, maximum_queue_size=100_000, maximum_batch_size=500):
-        self.raw_writer = raw_writer
+    def __init__(self, batch_writer, maximum_queue_size=100_000, maximum_batch_size=500):
+        self.batch_writer = batch_writer
         self.record_queue = queue.Queue(maxsize=maximum_queue_size)
         self.maximum_batch_size = maximum_batch_size
         self.dropped_record_count = 0
@@ -36,7 +36,7 @@ class QueuedSink:
         if self._writer_thread.is_alive():
             logger.error("Luồng ghi chưa dừng sau %ss, còn khoảng %d bản ghi",
                          timeout_seconds, self.record_queue.qsize())
-        self.raw_writer.close()
+        self.batch_writer.close()
 
     def _writer_loop(self):
         is_stopping = False
@@ -52,7 +52,7 @@ class QueuedSink:
                 is_stopping = True
             if record_batch:
                 try:
-                    self.raw_writer.write_batch(record_batch)        # ghi cả lô rồi flush một lần
+                    self.batch_writer.write_batch(record_batch)        # ghi cả lô rồi flush một lần
                     self.written_record_count += len(record_batch)
                 except Exception:
                     logger.exception("Lỗi ghi lô %d bản ghi", len(record_batch))

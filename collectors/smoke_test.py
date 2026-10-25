@@ -1,7 +1,3 @@
-"""Kiểm tra kết nối REST và khóa API bằng cách lấy giá trần, sàn, tham chiếu của vài mã.
-
-Chạy từ thư mục gốc: python -m collectors.smoke_test
-"""
 import json
 import os
 

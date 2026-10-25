@@ -1,20 +1,21 @@
 FROM python:3.13-slim
 
-# Không tạo file .pyc, log hiện ngay ra terminal
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# TZ là BẮT BUỘC: SDK DNSE đổi epoch sang chuỗi giờ theo múi giờ của máy, còn collector giả định đó là giờ Việt Nam.
+# Để mặc định (UTC) thì event_timestamp_utc sẽ lệch 7 tiếng mà không có cảnh báo nào.
+ENV TZ=Asia/Ho_Chi_Minh \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Cài thư viện trước để tận dụng cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy mã nguồn
-COPY src/ ./src/
+# Mã nguồn và config/vn30.txt (xem .dockerignore: không đưa .env, .venv, data vào image)
+COPY . .
 
-# Chạy bằng user thường thay vì root (an toàn hơn)
-RUN useradd -m appuser
-USER appuser
-
-CMD ["python", "src/main.py"]
+CMD ["python", "-u", "-m", "collectors.dnse_ingestion_2", "--until", "15:05"]
