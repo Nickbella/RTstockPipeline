@@ -1,1 +1,0 @@
-"""Các consumer đọc dữ liệu từ Kafka."""
