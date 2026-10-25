@@ -54,7 +54,7 @@ class KafkaWriter:
                     on_delivery=self._on_delivery)
             except BufferError:
                 self.failed_message_count += 1
-        self.producer.poll(0)                             # xử lý các callback giao hàng đang chờ
+            self.producer.poll(0)                             # xử lý các callback giao hàng đang chờ
 
     def close(self, flush_timeout_seconds=10):
         remaining_message_count = self.producer.flush(flush_timeout_seconds)
