@@ -5,7 +5,9 @@ from psycopg.types.json import Jsonb
 from confluent_kafka import Consumer
 from consumer.normalizer import FIELDS, normalize
 from utils.kafka_writer import to_kafka_topic_name
+from dotenv import load_dotenv
 
+load_dotenv()
 log = logging.getLogger("dnse.archiver")
 RAW_TOPICS = ("trade", "ohlc_1_minute", "quote", "foreign_trading", "expected_price")
 COMMON = {"kafka_topic": "text", "kafka_partition": "int", "kafka_offset": "bigint", "ma_ck": "text NOT NULL",
