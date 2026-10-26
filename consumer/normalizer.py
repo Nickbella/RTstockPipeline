@@ -44,7 +44,7 @@ def normalize(record):
            "ngay_giao_dich": time_vn.date().isoformat(), "nguon_thoi_gian": "san" if event_time else "collector",
            "thoi_gian_nhan_vn": receive_time.isoformat() if receive_time else None,
            "thoi_gian_sdk_vn": sdk_time.isoformat() if sdk_time else None, "so_thu_tu": pick(record, "stt")}
-    if topic not in FIELDS:                               # chưa có mẫu: giữ payload đã làm sạch
+    if topic not in FIELDS:                             
         row["du_lieu"] = payload
         return clean(row)
     for name, (field, cast, _) in FIELDS[topic].items():
