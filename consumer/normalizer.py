@@ -1,4 +1,3 @@
-"""Chuẩn hóa bản ghi thô (khóa Việt/Anh/cũ) -> dict sạch: tên VN, giờ UTC+7, bỏ null. Không dính tới Kafka hay DB."""
 import json
 from datetime import datetime
 from pathlib import Path
@@ -40,12 +39,16 @@ def normalize(record):
     time_vn = event_time or receive_time
     if not symbol or not time_vn:
         return None
-    row = {"topic": topic, "ma_ck": symbol, "thoi_gian_vn": time_vn.isoformat(),
-           "ngay_giao_dich": time_vn.date().isoformat(), "nguon_thoi_gian": "san" if event_time else "collector",
-           "thoi_gian_nhan_vn": receive_time.isoformat() if receive_time else None,
-           "thoi_gian_sdk_vn": sdk_time.isoformat() if sdk_time else None, "so_thu_tu": pick(record, "stt")}
-    if topic not in FIELDS:                             
-        row["du_lieu"] = payload
+    row = {"topic": topic, "symbol": symbol,
+           "time_vn": time_vn.replace(tzinfo=None).isoformat(),
+           "trading_date": time_vn.date().isoformat(),
+           "time_source": "exchange" if event_time else "collector",
+           "received_time_vn": receive_time.replace(tzinfo=None).isoformat() if receive_time else None,
+           "sdk_time_vn": sdk_time.replace(tzinfo=None).isoformat() if sdk_time else None,
+           "sequence_number": pick(record, "stt")}
+    
+    if topic not in FIELDS:                               # chưa có mẫu: giữ payload đã làm sạch
+        row["data"] = payload
         return clean(row)
     for name, (field, cast, _) in FIELDS[topic].items():
         try:
@@ -54,6 +57,6 @@ def normalize(record):
             row[name] = None
     if any(row.get(f) is None for f in REQUIRED[topic]):
         return None
-    if topic == "trade" and (row["gia"] <= 0 or row["khoi_luong"] <= 0):
+    if topic == "trade" and (row["price"] <= 0 or row["volume"] <= 0):
         return None
     return clean(row)

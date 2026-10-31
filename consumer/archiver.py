@@ -5,9 +5,11 @@ from confluent_kafka import Consumer
 from consumer.normalizer import normalize
 from rdbms import RAW_TOPICS, connect, create_tables, save
 from utils.kafka_writer import to_kafka_topic_name
+from dotenv import load_dotenv
+
+load_dotenv()
 
 log = logging.getLogger("dnse.archiver")
-
 
 def main():
     logging.basicConfig(level=logging.INFO)

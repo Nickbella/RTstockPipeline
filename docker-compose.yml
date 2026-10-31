@@ -1,6 +1,9 @@
+services:
   kafka:
-    image: apache/kafka:3.9.0
-    ports: ["29092:29092"]          # để chạy từ máy thật qua localhost:29092
+    image: apache/kafka:4.3.1
+    restart: unless-stopped
+    ports:
+      - "29092:29092"          # để chạy từ máy thật qua localhost:29092
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -11,9 +14,6 @@
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-  app:
-    environment: { KAFKA_BOOTSTRAP: "kafka:9092" }
-    depends_on: [kafka]
 
   postgres:
     image: postgres:17
@@ -23,7 +23,7 @@
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -31,5 +31,33 @@
       interval: 5s
       retries: 10
 
-  volumes:
-    pgdata:
+  pgadmin:
+    image: dpage/pgadmin4
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build: .
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  pgdata:
