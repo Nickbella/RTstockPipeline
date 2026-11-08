@@ -2,7 +2,7 @@ name: rtstockpipeline
 
 services:
   kafka:
-    image: apache/kafka:4.3.1        # PHẢI trùng đúng tag container đang chạy (xem bước 1)
+    image: apache/kafka:4.3.1
     restart: unless-stopped
     ports:
       - "29092:29092"
@@ -16,6 +16,9 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_RETENTION_HOURS: 720        
+    volumes:
+      - kafkadata:/var/lib/kafka/data       
 
   db:
     image: timescale/timescaledb:latest-pg17
@@ -59,7 +62,7 @@ services:
         condition: service_healthy
 
   app:
-    profiles: ["app"]
+    profiles: ["app"]                      
     build: .
     env_file:
       - .env
@@ -78,3 +81,4 @@ services:
 volumes:
   pgdata:
   grafanadata:
+  kafkadata:
