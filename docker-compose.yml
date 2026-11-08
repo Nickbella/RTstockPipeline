@@ -3,7 +3,7 @@ services:
     image: apache/kafka:4.3.1
     restart: unless-stopped
     ports:
-      - "29092:29092"          # để chạy từ máy thật qua localhost:29092
+      - "29092:29092"         
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
