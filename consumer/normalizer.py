@@ -1,4 +1,3 @@
-"""Chuẩn hóa bản ghi thô (khóa Việt/Anh/cũ) -> dict sạch: tên VN, giờ UTC+7, bỏ null. Không dính tới Kafka hay DB."""
 import json
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +9,9 @@ KEYS, REQUIRED = CONFIG["keys"], CONFIG["required"]
 CASTS = {"float": float, "int": lambda x: int(round(float(x))), "str": str}
 FIELDS = {topic: {name: (field, CASTS[cast], sql) for name, (field, cast, sql) in cols.items()}
           for topic, cols in CONFIG["fields"].items()}
+
+TRADE_SHARE_FACTOR = 10
+TRADE_VOLUME_COLUMNS = ("volume", "cumulative_volume")
 
 
 def pick(record, name):
@@ -31,6 +33,11 @@ def to_vn(text):
     return datetime.fromisoformat(text).astimezone(VN) if text else None
 
 
+def to_local_text(moment):
+    """Giờ VN dạng chuỗi không kèm offset, để lưu vào cột timestamp (không múi giờ)."""
+    return moment.replace(tzinfo=None).isoformat() if moment else None
+
+
 def normalize(record):
     """Bản ghi thô -> dict sạch, hoặc None nếu không dùng được."""
     payload = clean(pick(record, "payload") or {})
@@ -40,12 +47,15 @@ def normalize(record):
     time_vn = event_time or receive_time
     if not symbol or not time_vn:
         return None
-    row = {"topic": topic, "ma_ck": symbol, "thoi_gian_vn": time_vn.isoformat(),
-           "ngay_giao_dich": time_vn.date().isoformat(), "nguon_thoi_gian": "san" if event_time else "collector",
-           "thoi_gian_nhan_vn": receive_time.isoformat() if receive_time else None,
-           "thoi_gian_sdk_vn": sdk_time.isoformat() if sdk_time else None, "so_thu_tu": pick(record, "stt")}
-    if topic not in FIELDS:                             
-        row["du_lieu"] = payload
+    row = {"topic": topic, "symbol": symbol,
+           "time_vn": to_local_text(time_vn),
+           "trading_date": time_vn.date().isoformat(),
+           "time_source": "exchange" if event_time else "collector",
+           "received_time_vn": to_local_text(receive_time),
+           "sdk_time_vn": to_local_text(sdk_time),
+           "sequence_number": pick(record, "stt")}
+    if topic not in FIELDS:                               # chưa có mẫu: giữ payload đã làm sạch
+        row["data"] = payload
         return clean(row)
     for name, (field, cast, _) in FIELDS[topic].items():
         try:
@@ -54,6 +64,10 @@ def normalize(record):
             row[name] = None
     if any(row.get(f) is None for f in REQUIRED[topic]):
         return None
-    if topic == "trade" and (row["gia"] <= 0 or row["khoi_luong"] <= 0):
-        return None
+    if topic == "trade":
+        if row["price"] <= 0 or row["volume"] <= 0:
+            return None
+        for column in TRADE_VOLUME_COLUMNS:               # quy đổi đơn vị 10 cổ phiếu -> cổ phiếu
+            if row.get(column) is not None:
+                row[column] *= TRADE_SHARE_FACTOR
     return clean(row)

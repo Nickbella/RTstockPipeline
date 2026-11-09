@@ -1,6 +1,6 @@
 {
   "keys": {
-    "nguon": ["Nguồn dữ liệu", "source"],
+    "source": ["Nguồn dữ liệu", "source"],
     "topic": ["Chủ đề", "topic"],
     "ma": ["Mã CK", "symbol"],
     "payload": ["Nội dung gốc", "payload"],
@@ -11,25 +11,25 @@
   },
   "fields": {
     "trade": {
-      "gia": ["price", "float", "numeric(12,3)"],
-      "khoi_luong": ["quantity", "int", "bigint"],
-      "khoi_luong_luy_ke": ["totalVolumeTraded", "int", "bigint"],
-      "ma_phien": ["tradingSessionId", "str", "text"],
-      "san_giao_dich": ["marketId", "str", "text"]
+      "price": ["price", "float", "numeric(12,3)"],
+      "volume": ["quantity", "int", "bigint"],
+      "cumulative_volume": ["totalVolumeTraded", "int", "bigint"],
+      "session_id": ["tradingSessionId", "str", "text"],
+      "exchange": ["marketId", "str", "text"]
     },
     "ohlc_1_minute": {
-      "mo": ["open", "float", "numeric(12,3)"],
-      "cao": ["high", "float", "numeric(12,3)"],
-      "thap": ["low", "float", "numeric(12,3)"],
-      "dong": ["close", "float", "numeric(12,3)"],
-      "khoi_luong": ["volume", "int", "bigint"],
-      "cap_nhat": ["lastUpdated", "int", "bigint"],
-      "loai": ["type", "str", "text"],
-      "do_phan_giai": ["resolution", "str", "text"]
+      "open": ["open", "float", "numeric(12,3)"],
+      "high": ["high", "float", "numeric(12,3)"],
+      "low": ["low", "float", "numeric(12,3)"],
+      "close": ["close", "float", "numeric(12,3)"],
+      "volume": ["volume", "int", "bigint"],
+      "last_updated": ["lastUpdated", "int", "bigint"],
+      "type": ["type", "str", "text"],
+      "resolution": ["resolution", "str", "text"]
     }
   },
   "required": {
-    "trade": ["gia", "khoi_luong"],
-    "ohlc_1_minute": ["mo", "cao", "thap", "dong"]
+    "trade": ["price", "volume"],
+    "ohlc_1_minute": ["open", "high", "low", "close"]
   }
 }
