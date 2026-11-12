@@ -69,8 +69,8 @@ def convert_to_dictionary(message_object):
 
 
 def load_symbols(maximum_symbols=None):
-    """Đọc mã từ config/vn30.txt: bỏ chú thích (#), dấu phẩy, mã trùng."""
-    symbols_file_path = Path("config/vn30.txt")
+    """Đọc mã từ config/vn100.txt: bỏ chú thích (#), dấu phẩy, mã trùng."""
+    symbols_file_path = Path("config/vn100.txt")
     file_text = symbols_file_path.read_text(encoding="utf-8") if symbols_file_path.exists() else "HPG VCB FPT"
     symbols = []
     for line in file_text.splitlines():
