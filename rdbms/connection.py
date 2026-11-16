@@ -12,7 +12,7 @@ def connect(dsn=None, retry_seconds=5):
     dsn = dsn or os.environ["DATABASE_URL"]
     while True:
         try:
-            return psycopg.connect(dsn)
+            return psycopg.connect(dsn, autocommit=True)
         except psycopg.OperationalError as error:
             log.error("Chưa kết nối được DB: %s. Thử lại sau %ss", error, retry_seconds)
             time.sleep(retry_seconds)

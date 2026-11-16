@@ -54,7 +54,6 @@ class CandleBuilder:
                 return
             self.candles[key] = [price, price, price, price, 0, 0, 0.0]
 
-        # Cập nhật thông số nến
         candle = self.candles[key]
         candle[1] = max(candle[1], price)  # high
         candle[2] = min(candle[2], price)  # low
