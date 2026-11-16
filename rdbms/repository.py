@@ -4,7 +4,6 @@ from rdbms.schema import schema
 
 
 def save(conn, rows, errors):
-    """Một transaction cho cả lô; ON CONFLICT giúp ghi lại sau sự cố không sinh dòng trùng."""
     by_topic = {}
     for row in rows:
         if "data" in row:
