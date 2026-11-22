@@ -13,7 +13,7 @@ client = DNSEClient(
 )
 
 status_code, body = client.get_instruments(
-    symbol="", market_id="", security_group_id="", index_name="VN100", limit=100, page=1
+    symbol="", market_id="STO", security_group_id="", index_name="", limit=1000, page=1
 )
 
 if not status_code or status_code >= 300:
@@ -27,5 +27,5 @@ for item in items:
     symbols.append(symbol)          
 symbols.sort() 
 
-Path("config/vn100.txt").write_text("\n".join(symbols) + "\n", encoding="utf-8")
+Path("config/HOSE.txt").write_text("\n".join(symbols) + "\n", encoding="utf-8")
 print(f"Đã ghi {len(symbols)} mã vào file cấu hình")
