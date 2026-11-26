@@ -19,6 +19,9 @@ API_KEY, API_SECRET = os.getenv("DNSE_API_KEY"), os.getenv("DNSE_API_SECRET")
 WEBSOCKET_URL = os.getenv("DNSE_WS_URL", "wss://ws-openapi.dnse.com.vn")
 ENCODING = os.getenv("DNSE_ENCODING", "msgpack")
 BOARD_ID, SILENCE_LIMIT, VN_TZ = "G1", 180, ZoneInfo("Asia/Ho_Chi_Minh")
+MAX_CONNECTIONS = 9
+STREAMS_PER_CONNECTION = 200
+DEFAULT_SYMBOLS_FILE = Path("config/vn100.txt")
 
 
 def foreign_time(text):
@@ -37,7 +40,7 @@ TOPICS = {
 
 raw_writer = RawWriter("dnse")
 sinks = {"file": QueuedSink(raw_writer)}          # sink "kafka" được thêm trong main nếu có --kafka-servers
-counts, last_message = Counter(), {"time": time.monotonic()}
+counts = Counter()
 sequence = itertools.count(1)
 
 
@@ -52,17 +55,47 @@ def to_dict(message):
     return {k: v for k, v in vars(message).items() if not k.startswith("_")}
 
 
-def load_symbols(limit=None):
-    path = Path("config/vn100.txt")
-    text = path.read_text(encoding="utf-8") if path.exists() else "HPG VCB FPT"
+def load_symbols(limit=None, path=None):
+    try:
+        text = (path or DEFAULT_SYMBOLS_FILE).read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        if path is not None:
+            raise
+        text = "HPG VCB FPT"
     symbols = list(dict.fromkeys(s for line in text.splitlines()
                                  for s in line.split("#")[0].replace(",", " ").upper().split()))
     return symbols[:limit] if limit else symbols
 
-def make_handler(topic, time_field, convert_time):
+
+def plan_connections(topics, symbols):
+    stream_count = len(topics) * len(symbols)
+    capacity = MAX_CONNECTIONS * STREAMS_PER_CONNECTION
+    if not stream_count:
+        raise ValueError("Cần ít nhất một mã và một topic.")
+    if stream_count > capacity:
+        raise ValueError(
+            f"{len(symbols)} mã × {len(topics)} topic = {stream_count} stream, "
+            f"vượt giới hạn {capacity} stream ({MAX_CONNECTIONS} kết nối × {STREAMS_PER_CONNECTION}). "
+            "Hãy giảm số mã bằng --limit hoặc chọn ít topic hơn bằng --topics."
+        )
+
+    connection_count = min(MAX_CONNECTIONS, stream_count)
+    streams_per_connection, remainder = divmod(stream_count, connection_count)
+    streams = ((topic, symbol) for symbol in symbols for topic in topics)
+    plan = []
+    for index in range(connection_count):
+        subscriptions = {}
+        size = streams_per_connection + (index < remainder)
+        for topic, symbol in itertools.islice(streams, size):
+            subscriptions.setdefault(topic, []).append(symbol)
+        plan.append(subscriptions)
+    return plan
+
+
+def make_handler(topic, time_field, convert_time, last_messages, index):
     def handle(message):
         try:
-            last_message["time"] = time.monotonic()
+            last_messages[index] = time.monotonic()
             payload = to_dict(message)
             if counts[topic] == 0:
                 logger.info("Mẫu %s: %s", topic, payload)
@@ -95,44 +128,76 @@ def describe_sinks():
     return " | ".join(parts)
 
 
-async def log_statistics():
+async def log_statistics(last_messages):
     while True:
         await asyncio.sleep(30)
-        logger.info("Nhận %s | %s | im lặng %.0fs", dict(counts), describe_sinks(),
-                    time.monotonic() - last_message["time"])
+        now = time.monotonic()
+        idle_seconds = [round(now - last) for last in last_messages]
+        logger.info("Nhận %s | %s | im lặng theo kết nối (giây): %s",
+                    dict(counts), describe_sinks(), idle_seconds)
 
 
-async def run_session(topics, symbols, stop_time):
+async def run_session(index, subscriptions, last_messages):
     client = TradingClient(api_key=API_KEY, api_secret=API_SECRET, base_url=WEBSOCKET_URL, encoding=ENCODING)
     try:
         await client.connect()
-        last_message["time"] = time.monotonic()
-        for topic in topics:
+        last_messages[index] = time.monotonic()
+        for topic, symbols in subscriptions.items():
             subscribe, callback, extra, time_field, convert_time = TOPICS[topic]
+            handler = make_handler(topic, time_field, convert_time, last_messages, index)
             await getattr(client, subscribe)(
-                symbols,
-                **{callback: make_handler(topic, time_field, convert_time)}, encoding=ENCODING, **extra)
-        logger.info("Đã đăng ký %d mã, topic: %s", len(symbols), ", ".join(topics))
+                symbols, **{callback: handler}, encoding=ENCODING, **extra)
+        logger.info("Kết nối %d đã gửi đăng ký %d stream", index + 1,
+                    sum(map(len, subscriptions.values())))
         while True:
             await asyncio.sleep(5)
             now = datetime.now(VN_TZ)
-            if stop_time and now >= stop_time:
-                return
-            if is_continuous_trading(now) and time.monotonic() - last_message["time"] > SILENCE_LIMIT:
+            if is_continuous_trading(now) and time.monotonic() - last_messages[index] > SILENCE_LIMIT:
                 raise RuntimeError(f"Không có message trong {SILENCE_LIMIT}s")
     finally:
         try:
             await client.disconnect()
         except Exception as error:
-            logger.warning("Lỗi khi ngắt kết nối: %s", error)
+            logger.warning("Lỗi khi ngắt kết nối %d: %s", index + 1, error)
+
+
+async def collect_connection(index, subscriptions, last_messages):
+    delay = 1
+    while True:
+        started = time.monotonic()
+        try:
+            await run_session(index, subscriptions, last_messages)
+        except Exception as error:
+            if time.monotonic() - started > 60:
+                delay = 1
+            logger.error("Kết nối %d: %s. Thử lại sau %ss", index + 1, error, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60)
 
 
 async def main(args):
-    topics = [t.strip() for t in args.topics.split(",") if t.strip()]
+    topics = list(dict.fromkeys(t.strip() for t in args.topics.split(",") if t.strip()))
     invalid = [t for t in topics if t not in TOPICS]
     if invalid:
         raise SystemExit(f"Topic không hợp lệ: {invalid}. Hợp lệ: {list(TOPICS)}")
-    symbols = load_symbols(args.limit)
+    if args.limit is not None and args.limit < 1:
+        raise SystemExit("--limit phải lớn hơn 0.")
+    try:
+        symbols = load_symbols(args.limit, args.symbols_file)
+        plan = plan_connections(topics, symbols)
+    except (OSError, ValueError) as error:
+        raise SystemExit(str(error)) from None
+    logger.info("Thu thập %d mã × %d topic qua %d kết nối", len(symbols), len(topics), len(plan))
+
+    now = datetime.now(VN_TZ)
+    stop_time = None
+    if args.duration:
+        stop_time = now + timedelta(seconds=args.duration)
+    elif args.until:
+        hour, minute = map(int, args.until.split(":"))
+        stop_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if stop_time and stop_time <= now:
+        return
 
     if args.kafka_servers:
         from utils.kafka_writer import KafkaWriter, create_missing_topics
@@ -144,27 +209,18 @@ async def main(args):
     else:
         logger.warning("Không có --kafka-servers/KAFKA_BOOTSTRAP_SERVERS: CHỈ ghi tệp, không gửi Kafka")
 
-    now = datetime.now(VN_TZ)
-    stop_time = None
-    if args.duration:
-        stop_time = now + timedelta(seconds=args.duration)
-    elif args.until:
-        hour, minute = map(int, args.until.split(":"))
-        stop_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
+    timeout = (stop_time - datetime.now(VN_TZ)).total_seconds() if stop_time else None
     for sink in sinks.values():
         sink.start()
-    statistics_task = asyncio.create_task(log_statistics())
-    delay = 1
+    last_messages = [time.monotonic()] * len(plan)
+    statistics_task = asyncio.create_task(log_statistics(last_messages))
     try:
-        while not (stop_time and datetime.now(VN_TZ) >= stop_time):
-            started = time.monotonic()
-            try:
-                await run_session(topics, symbols, stop_time)
-            except Exception as error:
-                logger.error("Lỗi phiên kết nối: %s. Thử lại sau %ss", error, delay)
-                await asyncio.sleep(delay)
-                delay = 1 if time.monotonic() - started > 60 else min(delay * 2, 60)
+        async with asyncio.timeout(timeout):
+            async with asyncio.TaskGroup() as connections:
+                for index, subscriptions in enumerate(plan):
+                    connections.create_task(collect_connection(index, subscriptions, last_messages))
+    except TimeoutError:
+        pass
     finally:
         statistics_task.cancel()
         for sink in sinks.values():
@@ -177,6 +233,7 @@ if __name__ == "__main__":
     parser.add_argument("--until", help="Tự dừng lúc HH:MM (giờ VN)")
     parser.add_argument("--duration", type=int, help="Tự dừng sau N giây")
     parser.add_argument("--topics", default=",".join(TOPICS), help=f"Hợp lệ: {','.join(TOPICS)}")
+    parser.add_argument("--symbols-file", type=Path, help=f"Tệp danh sách mã (mặc định: {DEFAULT_SYMBOLS_FILE})")
     parser.add_argument("--limit", type=int, help="Chỉ lấy N mã đầu trong file mã")
     parser.add_argument("--kafka-servers", default=os.getenv("KAFKA_BOOTSTRAP_SERVERS"), help="Địa chỉ Kafka")
     try:
